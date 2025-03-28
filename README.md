@@ -5,6 +5,7 @@ Members(solo): Aeron Flores
 
 **Video Demo Links**
 Part A: https://youtube.com/shorts/sxtF72J1ahA?feature=share
+
 Part B: https://youtube.com/shorts/W5ZLxh3JUF0?feature=share
 
 Top Down Image (Used the same setup for both parts just left led in for Part B)
