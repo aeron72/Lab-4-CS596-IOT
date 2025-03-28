@@ -3,7 +3,7 @@
 
 Members(solo): Aeron Flores
 
-##Video Demo Links
+**Video Demo Links**
 Part A: https://youtube.com/shorts/sxtF72J1ahA?feature=share
 Part B: https://youtube.com/shorts/W5ZLxh3JUF0?feature=share
 
