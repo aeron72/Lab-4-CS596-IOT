@@ -1,0 +1,162 @@
+#include <Arduino.h>
+#include <Wire.h>
+#include <SparkFunLSM6DSO.h>   // Library for LSM6DSO
+#include <TFT_eSPI.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
+/*
+  BLE Step Counter using ESP32 and LSM6DSO
+
+  This program reads acceleration data from the LSM6DSO IMU sensor,
+  calculates movement magnitude with noise reduction, and counts steps
+  based on threshold crossing. The step count is displayed on a TFT screen
+  and sent over BLE to a connected device.
+*/
+
+#define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+#define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+
+LSM6DSO myIMU;
+TFT_eSPI tft = TFT_eSPI();
+BLECharacteristic *pCharacteristic;
+BLEServer *pServer;
+
+bool deviceConnected = false;
+float threshhold = 0.40;  // Adjusted for better step detection
+float xavg, yavg, zavg;
+int steps = 0, flag = 0; // flag prevents counting multiple steps per motion spike
+
+// Moving Average for Noise Reduction
+const int avgWindowSize = 5;
+// Circular buffer to store recent acceleration magnitudes for smoothing
+float accBuffer[avgWindowSize] = {0}; 
+int bufferIndex = 0;
+
+float getSmoothedAcceleration(float newReading) {// Simple moving average filter to reduce noise from acceleration readings
+    accBuffer[bufferIndex] = newReading;
+    bufferIndex = (bufferIndex + 1) % avgWindowSize;
+
+    float sum = 0;
+    for (int i = 0; i < avgWindowSize; i++) {
+        sum += accBuffer[i];
+    }
+    return sum / avgWindowSize;
+}
+
+void calibrate() {
+    Serial.println("Calibrating...");
+    float sumX = 0, sumY = 0, sumZ = 0;
+
+    for (int i = 0; i < 100; i++) {
+        sumX += myIMU.readFloatAccelX();
+        sumY += myIMU.readFloatAccelY();
+        sumZ += myIMU.readFloatAccelZ();
+        delay(10);
+    }
+
+    xavg = sumX / 100.0;
+    yavg = sumY / 100.0;
+    zavg = sumZ / 100.0;
+
+    Serial.println("Calibration Complete");
+}
+
+class MyServerCallbacks : public BLEServerCallbacks {
+    void onConnect(BLEServer* pServer) {
+        deviceConnected = true;
+        Serial.println("BLE Device Connected!");
+    }
+
+    void onDisconnect(BLEServer* pServer) {
+        deviceConnected = false;
+        Serial.println("BLE Device Disconnected!");
+        BLEDevice::startAdvertising();
+    }
+};
+
+void setup() {
+    Serial.begin(115200);
+    Wire.begin();
+
+    if (!myIMU.begin()) {
+        Serial.println("Failed to initialize LSM6DSO!");
+        while (1);
+    }
+    Serial.println("LSM6DSO Initialized!");
+
+    tft.init();
+    tft.setRotation(1);
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_YELLOW);
+    tft.drawString("Steps: ", 10, 20, 4);
+
+    calibrate();
+    delay(2000);  // Allow sensor to stabilize
+
+    steps = 0;
+    flag = 0;
+
+    // **BLE Setup**
+    BLEDevice::init("ESP32_Step_Counter");
+    pServer = BLEDevice::createServer();
+    pServer->setCallbacks(new MyServerCallbacks());
+
+    BLEService *pService = pServer->createService(SERVICE_UUID);
+    pCharacteristic = pService->createCharacteristic(
+                        CHARACTERISTIC_UUID,
+                        BLECharacteristic::PROPERTY_READ | 
+                        BLECharacteristic::PROPERTY_NOTIFY
+                      );
+
+    pCharacteristic->addDescriptor(new BLE2902());
+    pCharacteristic->setValue("0");  
+    pService->start();
+
+    BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+    pAdvertising->addServiceUUID(SERVICE_UUID);
+    pServer->getAdvertising()->start();
+
+    Serial.println("BLE Step Counter Ready!");
+}
+
+void loop() {
+     // Subtract baseline to get calibrated acceleration
+    float xAcc = myIMU.readFloatAccelX() - xavg;
+    float yAcc = myIMU.readFloatAccelY() - yavg;
+    float zAcc = myIMU.readFloatAccelZ() - zavg;
+  
+    // Calculate total acceleration magnitude 
+    float rawMagnitude = sqrt(xAcc * xAcc + yAcc * yAcc + zAcc * zAcc);
+    // Apply moving average to smooth out sudden spikes
+    float accMagnitude = getSmoothedAcceleration(rawMagnitude);
+
+    Serial.print("Accel Magnitude: ");
+    Serial.println(accMagnitude);
+
+    // Detect peaks instead of static threshold
+    if (accMagnitude > threshhold && flag == 0) { 
+        steps++;
+        flag = 1;
+
+        Serial.print("Step Count: ");
+        Serial.println(steps);
+        // BLE notification to client with updated step count
+        if (deviceConnected) {
+            String stepStr = String(steps);
+            pCharacteristic->setValue(stepStr.c_str());
+            pCharacteristic->notify();
+        }
+         // Display updated step count on TFT screen
+        tft.setTextColor(TFT_GREEN, TFT_BLACK);
+        tft.drawString(String(steps), 10, 40, 7);
+    }
+
+    // Reset detection only when acceleration decreases
+    if (accMagnitude < threshhold - 0.15 && flag == 1) {
+        flag = 0;
+    }
+
+    delay(50);
+}
